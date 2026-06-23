@@ -1,0 +1,16 @@
+[package]
+name = "rl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+environment = { path = "../environment" }
+
+# Bumped to 0.14 to fix the bincode 2.0 compatibility issue
+burn = { version = "0.14", features = ["wgpu", "train"] }
+burn-ndarray = "0.14" 
+
+ndarray = "0.15"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

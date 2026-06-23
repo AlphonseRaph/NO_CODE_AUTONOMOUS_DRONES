@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "environment",
+    "rl",
+    "simulator"
+]
+resolver = "2"

@@ -1,0 +1,12 @@
+[package]
+name = "simulator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+environment = { path = "../environment" }
+rl = { path = "../rl" }
+
+# Add Burn and the CPU backend
+burn = { version = "0.14", features = ["train"] }
+burn-ndarray = "0.14"

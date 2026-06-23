@@ -1,0 +1,10 @@
+[package]
+name = "environment"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# For matrix/grid state representation
+ndarray = "0.15"
+# For randomizing start/goal positions
+rand = "0.8"

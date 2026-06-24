@@ -21,7 +21,7 @@ fn main() {
     // 2. Initialize the Agent (Replay Buffer capacity: 10,000)
     let mut agent = DqnAgent::<Backend>::new(&device, 10000);
 
-    let num_episodes = 500;
+    let num_episodes = 2500;
     let max_steps_per_episode = 100;
 
     for episode in 1..=num_episodes {

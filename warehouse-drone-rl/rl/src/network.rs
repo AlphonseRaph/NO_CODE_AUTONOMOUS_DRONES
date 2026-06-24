@@ -13,14 +13,18 @@ pub struct DqnModelConfig {
     pub output_size: usize,
 }
 
+// rl/src/network.rs (Update only the `new` function)
+
 impl DqnModelConfig {
     pub fn new() -> Self {
         Self {
-            input_size: 2,      // State: [x, y]
-            hidden_size: 64,    // Hidden layer capacity
-            output_size: 4,     // Actions: [Up, Down, Left, Right]
+            input_size: 5,      // UPGRADED: [drone_x, drone_y, worker_x, worker_y]
+            hidden_size: 128,   // UPGRADED: More neurons to understand dynamic movement
+            output_size: 4,     // Actions remain the same: [Up, Down, Left, Right]
         }
     }
+    
+    // ... keep the rest of the file exactly as it is!
     
     pub fn init<B: Backend>(&self, device: &B::Device) -> DqnModel<B> {
         DqnModel {

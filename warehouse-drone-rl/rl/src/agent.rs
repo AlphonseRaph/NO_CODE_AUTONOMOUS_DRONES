@@ -74,6 +74,7 @@ impl<B: AutodiffBackend> DqnAgent<B> {
         }
     } 
 
+    // 3. Epsilon-Greedy Action Selection
     pub fn select_action(&mut self, state: State, device: &B::Device) -> Action {
         let mut rng = rand::thread_rng();
         
@@ -86,11 +87,17 @@ impl<B: AutodiffBackend> DqnAgent<B> {
             };
         }
 
-        let state_data = TensorData::from([[state.x, state.y]]);
+        // UPGRADED: Include has_package in selection state tensor
+        let state_data = TensorData::from([[
+            state.x, 
+            state.y, 
+            state.worker_x, 
+            state.worker_y,
+            state.has_package
+        ]]);
         let state_tensor = Tensor::<B, 2>::from_data(state_data, device);
         
         let q_values = self.policy_net.forward(state_tensor);
-        
         let best_action_idx: i32 = q_values.argmax(1).into_scalar().elem();
         
         match best_action_idx {
@@ -112,15 +119,14 @@ impl<B: AutodiffBackend> DqnAgent<B> {
     }
 
    // 6. The Deep Q-Learning Training Algorithm
-    pub fn train_step(&mut self, device: &B::Device) {
+   pub fn train_step(&mut self, device: &B::Device) {
         if self.memory.len() < self.hyperparams.batch_size {
-            return; // Not enough experiences to learn yet
+            return; 
         }
 
         let batch_size = self.hyperparams.batch_size;
         let batch = self.memory.sample(batch_size, &mut rand::thread_rng());
 
-        // 1. Unpack memories into FLAT arrays (much safer for Burn to ingest)
         let mut state_arr: Vec<f32> = Vec::new();
         let mut action_arr: Vec<i32> = Vec::new();
         let mut reward_arr: Vec<f32> = Vec::new();
@@ -128,9 +134,12 @@ impl<B: AutodiffBackend> DqnAgent<B> {
         let mut done_arr: Vec<f32> = Vec::new();
 
         for exp in batch {
-            // Push x and y sequentially
+            // UPGRADED: Extract 5 elements from previous state
             state_arr.push(exp.state.x);
             state_arr.push(exp.state.y);
+            state_arr.push(exp.state.worker_x);
+            state_arr.push(exp.state.worker_y);
+            state_arr.push(exp.state.has_package);
             
             action_arr.push(match exp.action {
                 Action::Up => 0,
@@ -141,53 +150,45 @@ impl<B: AutodiffBackend> DqnAgent<B> {
             
             reward_arr.push(exp.reward);
             
+            // UPGRADED: Extract 5 elements from next state
             next_state_arr.push(exp.next_state.x);
             next_state_arr.push(exp.next_state.y);
+            next_state_arr.push(exp.next_state.worker_x);
+            next_state_arr.push(exp.next_state.worker_y);
+            next_state_arr.push(exp.next_state.has_package);
             
             done_arr.push(if exp.done { 0.0 } else { 1.0 }); 
         }
 
-        // 2. Convert Arrays to 1D Tensors, then reshape to 2D [Batch_Size, Dimension]
+        // UPGRADED: Reshape to [batch_size, 5]
         let states = Tensor::<B, 1>::from_floats(state_arr.as_slice(), device)
-            .reshape([batch_size, 2]);
+            .reshape([batch_size, 5]);
             
         let next_states = Tensor::<B::InnerBackend, 1>::from_floats(next_state_arr.as_slice(), device)
-            .reshape([batch_size, 2]);
+            .reshape([batch_size, 5]);
         
-        // Actions use the Int type parameter
         let actions = Tensor::<B, 1, Int>::from_ints(action_arr.as_slice(), device)
             .reshape([batch_size, 1]);
-            
         let rewards = Tensor::<B, 1>::from_floats(reward_arr.as_slice(), device)
             .reshape([batch_size, 1]);
-            
         let dones = Tensor::<B, 1>::from_floats(done_arr.as_slice(), device)
             .reshape([batch_size, 1]);
 
-        // 3. Current Q-Values: Q(s, a)
         let current_q_all = self.policy_net.forward(states);
         let current_q = current_q_all.gather(1, actions); 
 
-        // 4. Target Q-Values: r + gamma * max(Q(s'))
         let next_q_all = self.target_net.forward(next_states);
         let max_next_q = next_q_all.max_dim(1);
         let max_next_q_diff = Tensor::<B, 2>::from_inner(max_next_q);
 
-        // The Core Bellman Math
         let target_q = rewards + (max_next_q_diff * dones) * self.hyperparams.gamma;
-        let target_q = target_q.detach(); // Freeze target gradients
+        let target_q = target_q.detach(); 
 
-        // 5. Mean Squared Error (MSE) Loss
         let diff = current_q - target_q;
         let loss = (diff.clone() * diff).mean(); 
 
-        // 6. Backpropagate and Optimize
-        // 6. Backpropagate and Optimize
         let raw_grads = loss.backward();
-        
-        // NEW: Convert raw backend gradients into parameter-mapped gradients
         let grads = burn::optim::GradientsParams::from_grads(raw_grads, &self.policy_net);
-        
         self.policy_net = self.optimizer.step(self.hyperparams.lr, self.policy_net.clone(), grads);
     }
 } // <-- This is the ONLY brace that closes the impl block now!

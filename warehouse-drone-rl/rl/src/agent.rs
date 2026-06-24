@@ -87,14 +87,8 @@ impl<B: AutodiffBackend> DqnAgent<B> {
             };
         }
 
-        // UPGRADED: Include has_package in selection state tensor
-        let state_data = TensorData::from([[
-            state.x, 
-            state.y, 
-            state.worker_x, 
-            state.worker_y,
-            state.has_package
-        ]]);
+        // SO CLEAN: Use the to_array() helper!
+        let state_data = TensorData::from([state.to_array()]);
         let state_tensor = Tensor::<B, 2>::from_data(state_data, device);
         
         let q_values = self.policy_net.forward(state_tensor);
@@ -119,10 +113,8 @@ impl<B: AutodiffBackend> DqnAgent<B> {
     }
 
    // 6. The Deep Q-Learning Training Algorithm
-   pub fn train_step(&mut self, device: &B::Device) {
-        if self.memory.len() < self.hyperparams.batch_size {
-            return; 
-        }
+  pub fn train_step(&mut self, device: &B::Device) {
+        if self.memory.len() < self.hyperparams.batch_size { return; }
 
         let batch_size = self.hyperparams.batch_size;
         let batch = self.memory.sample(batch_size, &mut rand::thread_rng());
@@ -134,12 +126,9 @@ impl<B: AutodiffBackend> DqnAgent<B> {
         let mut done_arr: Vec<f32> = Vec::new();
 
         for exp in batch {
-            // UPGRADED: Extract 5 elements from previous state
-            state_arr.push(exp.state.x);
-            state_arr.push(exp.state.y);
-            state_arr.push(exp.state.worker_x);
-            state_arr.push(exp.state.worker_y);
-            state_arr.push(exp.state.has_package);
+            // SO CLEAN: Append the whole 9-element array instantly!
+            state_arr.extend_from_slice(&exp.state.to_array());
+            next_state_arr.extend_from_slice(&exp.next_state.to_array());
             
             action_arr.push(match exp.action {
                 Action::Up => 0,
@@ -147,32 +136,17 @@ impl<B: AutodiffBackend> DqnAgent<B> {
                 Action::Left => 2,
                 Action::Right => 3,
             });
-            
             reward_arr.push(exp.reward);
-            
-            // UPGRADED: Extract 5 elements from next state
-            next_state_arr.push(exp.next_state.x);
-            next_state_arr.push(exp.next_state.y);
-            next_state_arr.push(exp.next_state.worker_x);
-            next_state_arr.push(exp.next_state.worker_y);
-            next_state_arr.push(exp.next_state.has_package);
-            
             done_arr.push(if exp.done { 0.0 } else { 1.0 }); 
         }
 
-        // UPGRADED: Reshape to [batch_size, 5]
-        let states = Tensor::<B, 1>::from_floats(state_arr.as_slice(), device)
-            .reshape([batch_size, 5]);
-            
-        let next_states = Tensor::<B::InnerBackend, 1>::from_floats(next_state_arr.as_slice(), device)
-            .reshape([batch_size, 5]);
+        // Reshape to [batch_size, 9]
+        let states = Tensor::<B, 1>::from_floats(state_arr.as_slice(), device).reshape([batch_size, 9]);
+        let next_states = Tensor::<B::InnerBackend, 1>::from_floats(next_state_arr.as_slice(), device).reshape([batch_size, 9]);
         
-        let actions = Tensor::<B, 1, Int>::from_ints(action_arr.as_slice(), device)
-            .reshape([batch_size, 1]);
-        let rewards = Tensor::<B, 1>::from_floats(reward_arr.as_slice(), device)
-            .reshape([batch_size, 1]);
-        let dones = Tensor::<B, 1>::from_floats(done_arr.as_slice(), device)
-            .reshape([batch_size, 1]);
+        let actions = Tensor::<B, 1, Int>::from_ints(action_arr.as_slice(), device).reshape([batch_size, 1]);
+        let rewards = Tensor::<B, 1>::from_floats(reward_arr.as_slice(), device).reshape([batch_size, 1]);
+        let dones = Tensor::<B, 1>::from_floats(done_arr.as_slice(), device).reshape([batch_size, 1]);
 
         let current_q_all = self.policy_net.forward(states);
         let current_q = current_q_all.gather(1, actions); 

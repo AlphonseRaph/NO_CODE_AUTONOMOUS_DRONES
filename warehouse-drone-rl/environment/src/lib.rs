@@ -1,5 +1,8 @@
 // environment/src/lib.rs
 
+use physics::{BoundingBox, DroneBody, Vector2D};
+use rand::Rng;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Up,
@@ -8,14 +11,30 @@ pub enum Action {
     Right,
 }
 
-// UPGRADED STATE: 5 Dimensions (Drone Pos + Worker Pos + Package Flag)
+// UPGRADED STATE: 9 Dimensions (Sensors + Physics + Objective)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct State {
-    pub x: f32,
-    pub y: f32,
-    pub worker_x: f32,
-    pub worker_y: f32,
-    pub has_package: f32, // 0.0 = No, 1.0 = Yes
+    pub sens_up: f32,
+    pub sens_down: f32,
+    pub sens_left: f32,
+    pub sens_right: f32,
+    pub vel_x: f32,
+    pub vel_y: f32,
+    pub target_dx: f32,
+    pub target_dy: f32,
+    pub has_package: f32,
+}
+
+impl State {
+    // A helper function to make passing this into our Neural Network MUCH cleaner
+    pub fn to_array(&self) -> [f32; 9] {
+        [
+            self.sens_up, self.sens_down, self.sens_left, self.sens_right,
+            self.vel_x, self.vel_y,
+            self.target_dx, self.target_dy,
+            self.has_package,
+        ]
+    }
 }
 
 pub trait Environment {
@@ -23,150 +42,104 @@ pub trait Environment {
     fn step(&mut self, action: Action) -> (State, f32, bool);
 }
 
-#[derive(Debug, Clone)]
-pub struct Worker {
-    pub x: usize,
-    pub y: usize,
-    pub min_y: usize,
-    pub max_y: usize,
-    pub moving_down: bool,
+pub struct ContinuousWarehouse {
+    pub drone: DroneBody,
+    pub bounds: BoundingBox,
+    pub start_pos: Vector2D,
+    pub pickup_pos: Vector2D,
+    pub delivery_pos: Vector2D,
+    pub has_package: bool,
+    pub target_radius: f32, // How close we need to get to consider the target "reached"
 }
 
-impl Worker {
-    pub fn move_step(&mut self) {
-        if self.moving_down {
-            self.y += 1;
-            if self.y >= self.max_y {
-                self.moving_down = false;
-            }
-        } else {
-            self.y -= 1;
-            if self.y <= self.min_y {
-                self.moving_down = true;
-            }
-        }
-    }
-}
-
-pub struct GridWorld {
-    pub width: usize,
-    pub height: usize,
-    pub drone_pos: (usize, usize),
-    pub start_pos: (usize, usize),
-    pub pickup_pos: (usize, usize),    // P Location
-    pub delivery_pos: (usize, usize),  // D Location (Old Goal)
-    pub obstacles: Vec<(usize, usize)>,
-    pub worker: Worker,
-    pub has_package: bool,             // Current drone cargo status
-}
-
-impl GridWorld {
+impl ContinuousWarehouse {
     pub fn new() -> Self {
-        let width = 20;
-        let height = 7;
-        let start_pos = (1, 1);
-        let pickup_pos = (5, 3);     // Item location
-        let delivery_pos = (13, 5);  // Final dropping zone
-
-        let mut obstacles = Vec::new();
-        
-        // Outer boundaries
-        for x in 0..width {
-            obstacles.push((x, 0));
-            obstacles.push((x, height - 1));
-        }
-        for y in 0..height {
-            obstacles.push((0, y));
-            obstacles.push((width - 1, y));
-        }
-        
-        // The static shelf
-        obstacles.push((14, 2));
-        obstacles.push((14, 3));
-        obstacles.push((14, 4));
-
-        let worker = Worker {
-            x: 8,
-            y: 1,
-            min_y: 1,
-            max_y: 5,
-            moving_down: true,
-        };
-
         Self {
-            width,
-            height,
-            drone_pos: start_pos,
-            start_pos,
-            pickup_pos,
-            delivery_pos,
-            obstacles,
-            worker,
+            drone: DroneBody::new(2.0, 2.0),
+            // A realistic 20x10 meter warehouse bounding box
+            bounds: BoundingBox { min_x: 0.0, max_x: 20.0, min_y: 0.0, max_y: 10.0 },
+            start_pos: Vector2D::new(2.0, 2.0),
+            pickup_pos: Vector2D::new(10.0, 8.0),
+            delivery_pos: Vector2D::new(18.0, 2.0),
             has_package: false,
+            target_radius: 1.0, // Must get within 1 meter of the target
         }
     }
 
     fn get_state(&self) -> State {
+        let sensors = self.drone.read_sensors(&self.bounds);
+        let target = if self.has_package { &self.delivery_pos } else { &self.pickup_pos };
+
+        // Calculate direction to current target
+        let dx = target.x - self.drone.position.x;
+        let dy = target.y - self.drone.position.y;
+        let dist = (dx * dx + dy * dy).sqrt().max(0.001); // Prevent division by zero
+
         State {
-            x: self.drone_pos.0 as f32,
-            y: self.drone_pos.1 as f32,
-            worker_x: self.worker.x as f32,
-            worker_y: self.worker.y as f32,
+            sens_up: sensors.dist_up,
+            sens_down: sensors.dist_down,
+            sens_left: sensors.dist_left,
+            sens_right: sensors.dist_right,
+            vel_x: self.drone.velocity.x,
+            vel_y: self.drone.velocity.y,
+            target_dx: dx / dist, // Normalized direction
+            target_dy: dy / dist, // Normalized direction
             has_package: if self.has_package { 1.0 } else { 0.0 },
         }
     }
 }
 
-impl Environment for GridWorld {
+impl Environment for ContinuousWarehouse {
     fn reset(&mut self) -> State {
-        self.drone_pos = self.start_pos;
-        self.worker.y = self.worker.min_y;
-        self.worker.moving_down = true;
-        self.has_package = false; // Reset payload status
+        let mut rng = rand::thread_rng();
         
+        self.drone = DroneBody::new(self.start_pos.x, self.start_pos.y);
+        
+        // DOMAIN RANDOMIZATION: Randomize the drone's mass by +/- 20% every episode!
+        self.drone.mass = rng.gen_range(0.8..1.2); 
+        
+        self.has_package = false;
         self.get_state()
     }
 
     fn step(&mut self, action: Action) -> (State, f32, bool) {
-        let (mut nx, mut ny) = self.drone_pos;
+        let thrust = 0.5;
+        let mut force_x = 0.0;
+        let mut force_y = 0.0;
 
+        // Apply continuous thrust
         match action {
-            Action::Up => { if ny > 0 { ny -= 1 } },
-            Action::Down => { ny += 1 },
-            Action::Left => { if nx > 0 { nx -= 1 } },
-            Action::Right => { nx += 1 },
+            Action::Up => force_y -= thrust,
+            Action::Down => force_y += thrust,
+            Action::Left => force_x -= thrust,
+            Action::Right => force_x += thrust,
         }
 
-        self.worker.move_step();
+        self.drone.apply_force(force_x, force_y);
 
-        // 1. Structural Obstacle Collision
-        if self.obstacles.contains(&(nx, ny)) {
-            return (self.get_state(), -50.0, true);
-        }
-
-        // 2. Worker Collision
-        if nx == self.worker.x && ny == self.worker.y {
+        // Collision Check using Physics bounds
+        if self.drone.is_colliding(&self.bounds) {
             return (self.get_state(), -100.0, true);
         }
 
-        self.drone_pos = (nx, ny);
-        let mut total_step_reward = -1.0;
+        let mut reward = -1.0; 
 
-        // 3. Sequential Task Evaluation
-        if !self.has_package {
-            // Task A: Go to pickup location
-            if self.drone_pos == self.pickup_pos {
+        // Target Proximity Check (Euclidean Distance)
+        let target = if self.has_package { &self.delivery_pos } else { &self.pickup_pos };
+        let dx = target.x - self.drone.position.x;
+        let dy = target.y - self.drone.position.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        if dist < self.target_radius {
+            if !self.has_package {
                 self.has_package = true;
-                total_step_reward += 50.0; // Intermediate reward bonus for picking up package
-                println!("    [Sim Log] Package Picked Up! Headed to delivery...");
-            }
-        } else {
-            // Task B: Go to delivery location
-            if self.drone_pos == self.delivery_pos {
-                return (self.get_state(), 100.0, true); // Ultimate delivery goal reached!
+                reward += 50.0;
+                println!("    [Sim Log] Package Picked Up! Target is now Delivery.");
+            } else {
+                return (self.get_state(), 100.0, true);
             }
         }
 
-        (self.get_state(), total_step_reward, false)
+        (self.get_state(), reward, false)
     }
 }

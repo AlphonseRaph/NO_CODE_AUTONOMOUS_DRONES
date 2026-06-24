@@ -18,8 +18,8 @@ pub struct DqnModelConfig {
 impl DqnModelConfig {
     pub fn new() -> Self {
         Self {
-            input_size: 5,      // UPGRADED: [drone_x, drone_y, worker_x, worker_y]
-            hidden_size: 128,   // UPGRADED: More neurons to understand dynamic movement
+            input_size: 9,      // UPGRADED: 9 Sensor Inputs
+            hidden_size: 256,   // UPGRADED: Deepened network for physics calculations
             output_size: 4,     // Actions remain the same: [Up, Down, Left, Right]
         }
     }

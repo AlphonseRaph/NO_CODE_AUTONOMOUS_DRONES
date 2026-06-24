@@ -8,3 +8,5 @@ edition = "2021"
 ndarray = "0.15"
 # For randomizing start/goal positions
 rand = "0.8"
+
+physics = { path = "../physics" } # Add this line

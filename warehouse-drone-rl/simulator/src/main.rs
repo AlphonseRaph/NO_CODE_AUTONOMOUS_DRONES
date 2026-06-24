@@ -1,6 +1,6 @@
 // simulator/src/main.rs
 
-use environment::{Environment, GridWorld};
+use environment::{Environment, ContinuousWarehouse}; // Updated!
 use rl::agent::DqnAgent;
 use rl::replay_buffer::Experience;
 
@@ -16,13 +16,13 @@ fn main() {
 
     // 1. Initialize Device and Environment
     let device = NdArrayDevice::Cpu;
-    let mut env = GridWorld::new();
+    let mut env = ContinuousWarehouse::new(); // Updated!
 
     // 2. Initialize the Agent (Replay Buffer capacity: 10,000)
     let mut agent = DqnAgent::<Backend>::new(&device, 10000);
 
     let num_episodes = 2500;
-    let max_steps_per_episode = 100;
+    let max_steps_per_episode = 300; // UPGRADED: Give the drone time to accelerate and brake!
 
     for episode in 1..=num_episodes {
         let mut state = env.reset();

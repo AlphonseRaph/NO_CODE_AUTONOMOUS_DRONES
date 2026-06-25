@@ -1,7 +1,7 @@
 // rl/src/agent.rs
 
 // rl/src/agent.rs
-
+use burn::record::{CompactRecorder, Recorder};
 use burn::optim::{Adam, AdamConfig, Optimizer}; 
 use burn::optim::adaptor::OptimizerAdaptor;
 use crate::network::{DqnModel, DqnModelConfig};
@@ -110,6 +110,15 @@ impl<B: AutodiffBackend> DqnAgent<B> {
 
     pub fn update_target_network(&mut self) {
         self.target_net = self.policy_net.clone().valid(); 
+    }
+
+    // Saves the trained policy network to a file
+    pub fn save_model(&self, file_path: &str) {
+        let record = self.policy_net.clone().into_record();
+        CompactRecorder::new()
+            .record(record, file_path.into())
+            .expect("Failed to save the model weights!");
+        println!("🧠 Neural Network successfully saved to: {}", file_path);
     }
 
    // 6. The Deep Q-Learning Training Algorithm

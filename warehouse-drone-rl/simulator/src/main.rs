@@ -1,78 +1,131 @@
+// 
+
 // simulator/src/main.rs
 
-use environment::{Environment, ContinuousWarehouse}; // Updated!
-use rl::agent::DqnAgent;
-use rl::replay_buffer::Experience;
+pub mod hal;
 
-// Import Burn's Autodiff wrapper and the NdArray (CPU) backend
-use burn::backend::Autodiff;
+use burn::record::{CompactRecorder, Recorder};
 use burn_ndarray::{NdArray, NdArrayDevice};
+use burn::tensor::{Tensor, TensorData, ElementConversion};
+use burn::module::Module;
 
-// Define our specific backend type: A CPU tensor backend with gradient tracking enabled
-type Backend = Autodiff<NdArray>;
+use environment::{ContinuousWarehouse, Environment, Action, State};
+use rl::network::{DqnModel, DqnModelConfig};
+use hal::{DroneController, DroneSensors};
 
-fn main() {
-    println!("=== Autonomous Warehouse Drone: Training Phase ===");
+// 1. INFERENCE BACKEND: No Autodiff required! 
+type Backend = NdArray; 
 
-    // 1. Initialize Device and Environment
-    let device = NdArrayDevice::Cpu;
-    let mut env = ContinuousWarehouse::new(); // Updated!
+// --- HARDWARE ABSTRACTION IMPLEMENTATION ---
+// If you move to ROS2, you simply replace this struct with a `Ros2Hardware` struct
+// that reads from `/scan` and publishes to `/cmd_vel`!
+struct SimulatedHardware {
+    env: ContinuousWarehouse,
+    current_state: State,
+}
 
-    // 2. Initialize the Agent (Replay Buffer capacity: 10,000)
-    let mut agent = DqnAgent::<Backend>::new(&device, 10000);
+impl SimulatedHardware {
+    fn new() -> Self {
+        let mut env = ContinuousWarehouse::new();
+        let current_state = env.reset();
+        Self { env, current_state }
+    }
+}
 
-    let num_episodes = 2500;
-    let max_steps_per_episode = 300; // UPGRADED: Give the drone time to accelerate and brake!
-
-    for episode in 1..=num_episodes {
-        let mut state = env.reset();
-        let mut total_reward = 0.0;
-        let mut steps_taken = 0;
-
-        for _ in 0..max_steps_per_episode {
-            steps_taken += 1;
-
-            // A. AI Decides Action
-            let action = agent.select_action(state, &device);
-
-            // B. Environment Reacts
-            let (next_state, reward, done) = env.step(action);
-            total_reward += reward;
-
-            // C. Agent Remembers
-            agent.memory.push(Experience {
-                state,
-                action,
-                reward,
-                next_state,
-                done,
-            });
-
-            // D. Agent Learns (Backpropagation)
-            agent.train_step(&device);
-
-            state = next_state;
-
-            if done {
-                break;
-            }
-        }
-
-        // 3. Episode Cleanup & Network Syncing
-        agent.decay_epsilon();
-
-        if episode % agent.hyperparams.target_update_freq == 0 {
-            agent.update_target_network();
-        }
-
-        // 4. Log Progress every 10 episodes
-        if episode % 10 == 0 {
-            println!(
-                "Episode {:>3} | Steps: {:>2} | Reward: {:>6.1} | Epsilon: {:.3}",
-                episode, steps_taken, total_reward, agent.epsilon
-            );
+impl DroneController for SimulatedHardware {
+    fn read_sensors(&self) -> DroneSensors {
+        DroneSensors {
+            distance_front: self.current_state.sens_up,
+            distance_back: self.current_state.sens_down,
+            distance_left: self.current_state.sens_left,
+            distance_right: self.current_state.sens_right,
+            velocity_x: self.current_state.vel_x,
+            velocity_y: self.current_state.vel_y,
+            payload_attached: self.current_state.has_package == 1.0,
         }
     }
 
-    println!("=== Training Complete! ===");
+    fn send_command(&mut self, action: Action) {
+        let (new_state, _, _) = self.env.step(action);
+        self.current_state = new_state;
+    }
+
+    fn get_target_vector(&self) -> (f32, f32) {
+        (self.current_state.target_dx, self.current_state.target_dy)
+    }
+}
+
+fn main() {
+    println!("===========================================");
+    println!("=== DRONE OS: Booting Inference Engine ===");
+    println!("===========================================\n");
+
+    let device = NdArrayDevice::Cpu;
+
+    // 2. Load the trained "Brain"
+    println!("[SYSTEM] Loading Neural Network weights from 'drone_brain.mpk'...");
+    let record = CompactRecorder::new()
+        .load("drone_brain".into(), &device) // FIXED: Added `&device` right here!
+        .expect("Failed to load drone_brain! Check your file path.");
+
+    // 3. Initialize the Model with the saved weights
+    let model: DqnModel<Backend> = DqnModelConfig::new()
+        .init(&device)
+        .load_record(record);
+
+    println!("[SYSTEM] Brain loaded successfully. Establishing hardware connection...");
+
+    // 4. Connect to the Drone via HAL
+    let mut drone = SimulatedHardware::new();
+
+    println!("[SYSTEM] Connection established. Commencing autonomous flight.\n");
+    
+    // 5. The Real-Time Flight Loop (Operating at roughly 10Hz in real life)
+    for step in 1..=150 {
+        // A. Read sensors from hardware
+        let sensors = drone.read_sensors();
+        let (tx, ty) = drone.get_target_vector();
+
+        // B. Package data exactly as the neural network expects (9 dimensions)
+        let state_array = [
+            sensors.distance_front, sensors.distance_back, 
+            sensors.distance_left, sensors.distance_right,
+            sensors.velocity_x, sensors.velocity_y,
+            tx, ty,
+            if sensors.payload_attached { 1.0 } else { 0.0 }
+        ];
+
+        let state_tensor = Tensor::<Backend, 2>::from_data(
+            TensorData::from([state_array]), 
+            &device
+        );
+
+        // C. Forward Pass (Pure AI prediction! No epsilon randomness)
+        let q_values = model.forward(state_tensor);
+        let best_action_idx: i32 = q_values.argmax(1).into_scalar().elem();
+
+        let action = match best_action_idx {
+            0 => Action::Up,
+            1 => Action::Down,
+            2 => Action::Left,
+            _ => Action::Right,
+        };
+
+        // D. Execute hardware command
+        drone.send_command(action);
+
+        // E. Telemetry output
+        let target_str = if sensors.payload_attached { "Delivery Zone" } else { "Pickup Shelf" };
+        let speed = (sensors.velocity_x.powi(2) + sensors.velocity_y.powi(2)).sqrt();
+        
+        println!(
+            "Flight Time T+{:>3} | Action: {:<5} | Target: {:<13} | Speed: {:.2} m/s", 
+            step, format!("{:?}", action), target_str, speed
+        );
+
+        // In a real drone, we would pace the loop here to match physical hardware speeds:
+        // std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("\n=== Autonomous Mission Complete ===");
 }

@@ -33,21 +33,28 @@ Phase 3 bridges the gap between simulation and reality by abandoning the discret
 * **Continuous Coordinate System:** Replaced rigid 90-degree movements with continuous physics, requiring the AI to manage thrust, velocity, acceleration, and aerodynamic drag.
 * **Sensor Arrays (Lidar):** Removed absolute (x,y) coordinates from the drone's memory. The agent now relies on simulated raycasting to read distances to walls, mimicking real-world Lidar.
 * **Domain Randomization:** The mass of the drone is randomly perturbed by ±20% every episode. This forces the Deep Q-Network to learn a robust, dynamic control policy based on its current velocity rather than memorizing static thrust timings.
-* **Upgraded Intelligence:** The Neural Network was expanded to a 9-dimensional input (`[4x lidar, 2x velocity, 2x target_vector, payload_status]`) with 256 hidden neurons.
 * **Milestone:** The agent learned to fly optimized, curved aerodynamic paths—applying thrust to cut corners, coasting on its own momentum, and executing reverse-thrust braking to land smoothly in the delivery zone.
+
+## 🧠 Phase 4: Sim-to-Real & Hardware Abstraction (Completed)
+
+Phase 4 extracts the trained AI from the simulator and packages it for real-world or 3D engine deployment.
+
+* **Weight Export:** The Deep Q-Network's parameters are serialized and compressed into a portable `.mpk` format (`drone_brain.mpk`).
+* **Lightweight Inference Engine:** Created a forward-pass-only engine that strips away all Autodiff and training overhead. It loads the `.mpk` file and issues commands at a high frequency, making it perfectly sized for edge compute devices like a Raspberry Pi.
+* **Hardware Abstraction Layer (HAL):** Implemented a universal `DroneController` trait. The AI no longer needs to know if it is operating inside a Rust simulator, a ROS2/Gazebo 3D environment, or on a physical drone over Wi-Fi. It simply ingests standardized `DroneSensors` data and outputs mechanical `Action` commands.
 
 ## 🛠️ Architecture
 
 The project is structured as a Cargo Workspace to separate concerns:
 
-* **`/physics`:** (New in Phase 3) The continuous physics engine handling momentum, drag, and Lidar raycasting.
+* **`/physics`:** The continuous physics engine handling momentum, drag, and Lidar raycasting.
 * **`/environment`:** The spatial logic, boundary enforcement, and reward state generation.
 * **`/rl`:** The Deep Learning brain, neural networks, memory buffers, and gradient descent logic.
-* **`/simulator`:** The execution loop that connects the brain to the simulated world.
+* **`/simulator`:** The HAL and execution engine that connects the AI to either simulated or physical hardware.
 
 ## 💻 How to Run
 
-To watch the agent train from scratch, ensure you have Rust installed and run the following command from the root directory:
+To run the lightweight Inference Engine using the pre-trained weights, ensure you have Rust installed and run:
 
 ```bash
 cargo run -p simulator
